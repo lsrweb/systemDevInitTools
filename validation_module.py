@@ -1,7 +1,7 @@
-# This file has been moved and renamed to src/validation_section.py
 import tkinter as tk
 from tkinter import ttk
 import subprocess
+import os
 
 class ValidationSection:
     def __init__(self, master):
@@ -34,7 +34,10 @@ class ValidationSection:
 
     def validate_node(self):
         try:
-            result = subprocess.run(["node", "-v"], check=True, capture_output=True, text=True)
+            if os.name == 'nt':  # Windows 系统
+                result = subprocess.run(["node", "-v"], check=True, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:  # 其他系统
+                result = subprocess.run(["node", "-v"], check=True, capture_output=True, text=True)
             self.node_status.set("Node.js 可用")
             self.node_log = result.stdout
             self.node_log_button.grid()  # Show the button after validation
@@ -47,7 +50,10 @@ class ValidationSection:
 
     def validate_java(self):
         try:
-            result = subprocess.run(["java", "-version"], check=True, capture_output=True, text=True)
+            if os.name == 'nt':  # Windows 系统
+                result = subprocess.run(["java", "-version"], check=True, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:  # 其他系统
+                result = subprocess.run(["java", "-version"], check=True, capture_output=True, text=True)
             self.java_status.set("Java可用")
             self.java_log = result.stderr
             self.java_log_button.grid()  # Show the button after validation
@@ -63,3 +69,17 @@ class ValidationSection:
         log_text.pack(padx=10, pady=10)
         log_text.insert(tk.END, log_message)
         log_text.config(state=tk.DISABLED)
+
+    def run_validation(self):
+        script_path = self.script_path_var.get()
+        if os.path.exists(script_path):
+            try:
+                # 添加 creationflags 参数以隐藏控制台窗口
+                subprocess.run([script_path], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                self.validation_result_label.config(text="验证成功", foreground="green")
+            except subprocess.CalledProcessError as e:
+                self.validation_result_label.config(text=f"验证失败: {e}", foreground="red")
+            except FileNotFoundError:
+                self.validation_result_label.config(text="脚本文件未找到", foreground="red")
+        else:
+            self.validation_result_label.config(text="脚本文件路径无效", foreground="red")
