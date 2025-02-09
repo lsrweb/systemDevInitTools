@@ -1,0 +1,13 @@
+# PyInstaller build artifacts
+/dist
+/build
+
+# PyInstaller temporary files
+*.spec
+__pycache__/
+*.pyc
+
+# OS generated files #
+######################
+.DS_Store
+Thumbs.db
