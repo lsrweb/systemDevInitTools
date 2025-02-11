@@ -99,7 +99,10 @@ def register(api):
     config = api.get_config()
     if LOCAL_VERSIONS_KEY not in config:
         config[LOCAL_VERSIONS_KEY] = []
-    api.save_config()
+    if "gradle_home" not in config:
+        config["gradle_home"] = DEFAULT_GRADLE_HOME
+    # 使用静默保存避免触发重启提示
+    api.save_config(silent=True)
 
 def gui(master, app):
     """插件 GUI 界面."""
@@ -133,6 +136,8 @@ def gui(master, app):
             version_path = local_versions[selection[0]]
             try:
                 set_active_version(version_path)
+                # 静默更新配置
+                app.plugin_api.set_config("gradle_active_version", version_path, silent=True)
                 messagebox.showinfo("成功", "Gradle 版本已更新，请重启终端使环境变量生效")
             except Exception as e:
                 messagebox.showerror("错误", f"设置版本失败: {str(e)}")
@@ -159,7 +164,8 @@ def gui(master, app):
                 gradle_path = download_gradle(version, install_path)
                 local_versions = get_local_versions(app.plugin_api.get_config())
                 local_versions.append(gradle_path)
-                app.plugin_api.set_config(LOCAL_VERSIONS_KEY, local_versions)
+                # 静默更新版本列表
+                app.plugin_api.set_config(LOCAL_VERSIONS_KEY, local_versions, silent=True)
                 version_list.insert(tk.END, gradle_path)
                 messagebox.showinfo("成功", f"Gradle {version} 已下载")
             except Exception as e:

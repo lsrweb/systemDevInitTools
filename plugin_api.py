@@ -12,11 +12,23 @@ class PluginAPI:
             return self.app.config
         return self.app.config.get(key)
 
-    def set_config(self, key, value):
-        """设置配置信息."""
+    def set_config(self, key, value, silent=False):
+        """
+        设置配置信息.
+        Args:
+            key: 配置键名
+            value: 配置值
+            silent: 是否静默保存（不触发重启提示）
+        """
+        self.app.programmatic_change = silent
         self.app.config[key] = value
         self.app.save_config()
 
-    def save_config(self):
-        """保存配置信息."""
+    def save_config(self, silent=False):
+        """
+        保存配置信息.
+        Args:
+            silent: 是否静默保存（不触发重启提示）
+        """
+        self.app.programmatic_change = silent
         self.app.save_config()

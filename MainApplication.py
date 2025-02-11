@@ -111,6 +111,9 @@ class EnvConfigurator:
         # 加载插件
         self.load_plugins()
 
+        self.config_lock = False  # 添加配置锁定标志
+        self.programmatic_change = False  # 添加程序修改标志
+
     def load_config(self):
         # 加载配置文件
         if not os.path.exists(self.config_dir):
@@ -127,13 +130,21 @@ class EnvConfigurator:
             return self.default_config
 
     def save_config(self):
-        # 保存配置文件
+        """保存配置文件."""
         try:
+            self.programmatic_change = True  # 标记为程序修改
             with open(self.config_file, "w") as f:
                 json.dump(self.config, f, indent=4)
             print("配置文件保存成功")
         except Exception as e:
             print(f"保存配置文件失败: {e}")
+        finally:
+            # 延迟重置程序修改标志
+            self.master.after(1000, self.reset_programmatic_change)
+
+    def reset_programmatic_change(self):
+        """重置程序修改标志."""
+        self.programmatic_change = False
 
     def refresh_env(self):
         if os.name == 'nt':  # Windows 系统
@@ -142,12 +153,12 @@ class EnvConfigurator:
             print("请手动刷新环境变量或重启终端。")
 
     def monitor_config_file(self):
-        # 监控配置文件修改
+        """监控配置文件修改."""
         while True:
             try:
-                if os.path.exists(self.config_file):
+                if os.path.exists(self.config_file) and not self.config_lock:
                     modified_time = os.path.getmtime(self.config_file)
-                    if modified_time != self.last_modified:
+                    if modified_time != self.last_modified and not self.programmatic_change:
                         self.master.after(0, self.config_file_changed)
                         self.last_modified = modified_time
                 time.sleep(1)
@@ -156,9 +167,17 @@ class EnvConfigurator:
                 time.sleep(10)
 
     def config_file_changed(self):
-        # 配置文件发生变化时的处理
-        print("配置文件已修改，请重启应用以加载新配置。")
-        tk.messagebox.showinfo("提示", "配置文件已修改，请重启应用以加载新配置。")
+        """配置文件发生变化时的处理."""
+        if not self.programmatic_change:
+            print("检测到配置文件手动修改")
+            self.config_lock = True  # 锁定配置监控
+            response = messagebox.askyesno(
+                "配置变更", 
+                "检测到配置文件已被手动修改，是否重启应用以加载新配置？"
+            )
+            if response:
+                self.restart_application()
+            self.config_lock = False  # 解除锁定
 
     def restart_application(self):
         # 重启应用
