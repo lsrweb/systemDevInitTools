@@ -9,6 +9,7 @@ from threading import Thread
 import sys  # 导入 sys 模块
 import importlib
 from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk  # 导入 PIL 库
 
 # 导入各个模块
 from setup_module import SetupSection
@@ -16,6 +17,7 @@ from env_config_module import EnvConfigSection
 from env_vars_module import EnvVarsSection
 from validation_module import ValidationSection
 from plugin_api import PluginAPI  # 导入 PluginAPI
+
 
 class EnvConfigurator:
     def __init__(self, master):
@@ -36,6 +38,7 @@ class EnvConfigurator:
 
         # 插件列表
         self.plugins = []
+        self.plugin_buttons = {}  # 添加插件按钮字典
 
         # 创建 PluginAPI 实例
         self.plugin_api = PluginAPI(self)
@@ -62,7 +65,7 @@ class EnvConfigurator:
 
         # 插件按钮容器
         self.plugin_button_frame = ttk.Frame(self.extension_frame)
-        self.plugin_button_frame.pack(padx=5, pady=5)
+        self.plugin_button_frame.pack(padx=5, pady=5, fill=tk.X)
 
         # 暂无插件标签
         self.no_plugins_label = ttk.Label(self.plugin_button_frame, text="暂无插件")
@@ -189,30 +192,29 @@ class EnvConfigurator:
 
     def load_plugins(self):
         """加载插件."""
-        # 创建插件目录
         if not os.path.exists(self.plugins_dir):
             os.makedirs(self.plugins_dir)
 
-        # 读取 plugins.json 文件
-        if os.path.exists(self.plugins_json):
-            try:
-                with open(self.plugins_json, "r") as f:
-                    plugin_files = json.load(f)
-            except Exception as e:
-                print(f"加载 plugins.json 失败: {e}")
-                plugin_files = []
-        else:
+        try:
+            with open(self.plugins_json, "r") as f:
+                plugin_files = json.load(f)
+        except Exception:
             plugin_files = []
 
-        # 初始化插件按钮区域
+        # 清空现有插件和按钮
+        self.plugins = []
         self.clear_plugin_buttons()
-        self.no_plugins_label = ttk.Label(self.plugin_button_frame, text="暂无插件")
-        self.no_plugins_label.pack(padx=5, pady=5)
 
         # 加载插件
         for filename in plugin_files:
             plugin_path = os.path.join(self.plugins_dir, filename)
-            self.load_plugin(plugin_path)
+            if os.path.exists(plugin_path):
+                self.load_plugin(plugin_path)
+
+        # 更新插件区域显示
+        if not self.plugins:
+            self.no_plugins_label = ttk.Label(self.plugin_button_frame, text="暂无插件")
+            self.no_plugins_label.pack(padx=5, pady=5)
 
     def load_plugin(self, plugin_path):
         """加载单个插件."""
@@ -283,7 +285,7 @@ class EnvConfigurator:
             messagebox.showerror("注册插件失败", f"无法注册插件: {e}")
 
     def create_plugin_button(self, plugin):
-        """创建插件按钮."""
+        """创建插件按钮。"""
         button_frame = ttk.Frame(self.plugin_button_frame)
         button_frame.pack(side=tk.LEFT, padx=5, pady=5)
 
@@ -301,8 +303,11 @@ class EnvConfigurator:
         )
         remove_button.pack(side=tk.LEFT, padx=2)
 
+        # 保存按钮引用
+        self.plugin_buttons[plugin.name] = button_frame
+
     def show_plugin_gui(self, plugin):
-        """显示插件 GUI 界面."""
+        """显示插件 GUI 界面。"""
         try:
             # 插件必须有一个 gui 函数
             if hasattr(plugin, 'gui'):
@@ -319,7 +324,7 @@ class EnvConfigurator:
             messagebox.showerror("错误", f"无法显示插件 {plugin.name} GUI: {e}")
 
     def update_plugins_json(self, plugin_name):
-        """更新 plugins.json 文件."""
+        """更新 plugins.json 文件。"""
         if os.path.exists(self.plugins_json):
             try:
                 with open(self.plugins_json, "r") as f:
@@ -341,49 +346,66 @@ class EnvConfigurator:
             print(f"更新 plugins.json 失败: {e}")
 
     def clear_plugin_buttons(self):
-        """清空插件按钮区域."""
-        for widget in self.plugin_button_frame.winfo_children():
-            widget.destroy()
+        """清空插件按钮区域。"""
+        for button_frame in self.plugin_buttons.values():
+            button_frame.destroy()
+        self.plugin_buttons.clear()
+        
+        if hasattr(self, 'no_plugins_label'):
+            self.no_plugins_label.destroy()
 
     def find_plugin_by_name(self, plugin_name):
-        """根据插件名称查找插件."""
+        """根据插件名称查找插件。"""
         for plugin in self.plugins:
             if plugin.name == plugin_name:
                 return plugin
         return None
 
     def remove_plugin(self, plugin):
-        """移除插件."""
+        """移除插件。"""
         try:
-            # 获取插件名称
             plugin_name = plugin.name
+            plugin_filename = os.path.basename(plugin.__file__)
+            plugin_path = os.path.join(self.plugins_dir, plugin_filename)
 
-            # 从插件列表中移除
+            # 从列表中移除插件
             self.plugins.remove(plugin)
 
-            # 从插件按钮区域移除
-            self.clear_plugin_buttons()
+            # 从文件系统中删除插件文件
+            if os.path.exists(plugin_path):
+                try:
+                    os.remove(plugin_path)
+                except PermissionError:
+                    print(f"无法删除插件文件 {plugin_path}，将在应用重启后删除")
 
-            # 从 plugins.json 文件中移除
-            self.remove_plugin_from_json(plugin_name)
+            # 更新 plugins.json
+            self.remove_plugin_from_json(plugin_filename)
 
-            # 重新加载插件按钮
-            self.load_plugins()
+            # 删除插件按钮
+            if plugin_name in self.plugin_buttons:
+                self.plugin_buttons[plugin_name].destroy()
+                del self.plugin_buttons[plugin_name]
+
+            # 如果没有插件了，显示"暂无插件"标签
+            if not self.plugins:
+                self.no_plugins_label = ttk.Label(self.plugin_button_frame, text="暂无插件")
+                self.no_plugins_label.pack(padx=5, pady=5)
 
             print(f"插件 {plugin_name} 移除成功")
+            
         except Exception as e:
-            print(f"移除插件 {plugin_name} 失败: {e}")
-            messagebox.showerror("移除插件失败", f"无法移除插件 {plugin_name}: {e}")
+            print(f"移除插件 {plugin.name} 失败: {e}")
+            messagebox.showerror("移除插件失败", f"无法移除插件 {plugin.name}: {e}")
 
     def remove_plugin_from_json(self, plugin_name):
-        """从 plugins.json 文件中移除插件."""
+        """从 plugins.json 文件中移除插件。"""
         try:
             # 读取 plugins.json 文件
             with open(self.plugins_json, "r") as f:
                 plugin_files = json.load(f)
 
             # 移除插件
-            plugin_files = [f for f in plugin_files if plugin_name not in f]
+            plugin_files = [f for f in plugin_files if f != plugin_name]
 
             # 写入 plugins.json 文件
             with open(self.plugins_json, "w") as f:
@@ -394,7 +416,7 @@ class EnvConfigurator:
             print(f"更新 plugins.json 失败: {e}")
 
     def confirm_remove_plugin(self, plugin):
-        """确认是否移除插件."""
+        """确认是否移除插件。"""
         if messagebox.askokcancel("确认", f"确定要移除插件 {plugin.name} 吗？"):
             self.remove_plugin(plugin)
 

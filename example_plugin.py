@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 # 示例插件
-name = "Nvm下载"  # 插件名称
+name = "Gradle 下载tese"  # 插件名称
 
 def register(api):
     """注册插件."""
