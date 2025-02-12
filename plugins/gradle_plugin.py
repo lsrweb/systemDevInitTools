@@ -45,21 +45,47 @@ DEFAULT_GRADLE_HOME = os.path.expanduser("~/.gradle")
 GRADLE_BIN_NAME = "bin" if os.name == 'nt' else "bin/gradle"
 LOCAL_VERSIONS_KEY = "gradle_installed_versions"
 
-def download_gradle(version, target_path):
+def download_gradle(version, target_path, plugin_api):
     """下载指定版本的 Gradle."""
+    # 验证并确保目标路径存在
+    if not plugin_api.validate_path(target_path):
+        raise ValueError(f"无效的目标路径: {target_path}")
+        
+    if not plugin_api.ensure_dir_exists(target_path):
+        raise ValueError(f"无法创建目标目录: {target_path}")
+    
     download_url = f"https://services.gradle.org/distributions/gradle-{version}-bin.zip"
     response = requests.get(download_url, stream=True)
     zip_path = os.path.join(target_path, f"gradle-{version}.zip")
     
-    with open(zip_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
-            
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(target_path)
+    # 获取文件总大小
+    total_size = int(response.headers.get('content-length', 0))
+    block_size = 8192
+    downloaded = 0
     
-    os.remove(zip_path)
-    return os.path.join(target_path, f"gradle-{version}")
+    try:
+        with open(zip_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=block_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    # 计算下载进度百分比
+                    if total_size:
+                        progress = int((downloaded / total_size) * 100)
+                        plugin_api.set_taskbar_progress(progress, "normal")
+        
+        plugin_api.set_taskbar_progress(100, "normal")
+        
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(target_path)
+        
+        os.remove(zip_path)
+        plugin_api.set_taskbar_progress(0, "none")  # 隐藏进度条
+        return os.path.join(target_path, f"gradle-{version}")
+        
+    except Exception as e:
+        plugin_api.set_taskbar_progress(100, "error")  # 显示错误状态
+        raise e
 
 def get_remote_versions():
     """获取远程可用的 Gradle 版本."""
@@ -71,28 +97,45 @@ def get_remote_versions():
         print(f"获取远程版本失败: {e}")
         return []
 
-def verify_gradle_version():
-    """验证当前系统的 Gradle 版本."""
+
+
+def remove_gradle_version(version_path, api):
+    """删除指定的Gradle版本"""
     try:
-        result = subprocess.run(['gradle', '--version'], 
-                              capture_output=True, 
-                              text=True)
-        return result.stdout
+        # 如果是当前激活的版本，先清除环境变量
+        current_gradle_home = api.get_env_var("GRADLE_HOME")
+        if (current_gradle_home == version_path):
+            api.set_env_var("GRADLE_HOME", "")
+            api.remove_from_path(f"%GRADLE_HOME%\\bin")
+            
+        # 删除文件夹
+        if os.path.exists(version_path):
+            import shutil
+            shutil.rmtree(version_path)
+        return True
     except Exception as e:
-        return f"验证失败: {str(e)}"
+        print(f"删除版本失败: {str(e)}")
+        return False
 
 def get_local_versions(config):
     """获取本地安装的版本列表."""
     return config.get(LOCAL_VERSIONS_KEY, [])
 
-def set_active_version(version_path):
+def set_active_version(version_path, api):
     """设置活动版本到系统环境变量."""
-    gradle_bin = os.path.join(version_path, GRADLE_BIN_NAME)
-    if os.name == 'nt':  # Windows
-        subprocess.run(['setx', 'PATH', f"%PATH%;{gradle_bin}"], shell=True)
-    else:  # Unix-like
-        # 更新 ~/.bashrc 或 ~/.zshrc
-        pass
+    try:
+        # 设置 GRADLE_HOME 环境变量
+        if not api.set_env_var("GRADLE_HOME", version_path):
+            return False
+            
+        # 将bin目录添加到PATH，使用GRADLE_HOME作为父变量
+        if not api.append_to_path(version_path, parent_var="GRADLE_HOME"):
+            return False
+            
+        return True
+    except Exception as e:
+        print(f"设置环境变量失败: {str(e)}")
+        return False
 
 def register(api):
     """注册插件."""
@@ -101,11 +144,13 @@ def register(api):
         config[LOCAL_VERSIONS_KEY] = []
     if "gradle_home" not in config:
         config["gradle_home"] = DEFAULT_GRADLE_HOME
-    # 使用静默保存避免触发重启提示
-    api.save_config(silent=True)
 
-def gui(master, app):
+def gui(master, context):
     """插件 GUI 界面."""
+    # 从 context 中获取所需对象
+    app = context['app']
+    plugin_api = context['plugin_api']
+    
     notebook = ttk.Notebook(master)
     notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -122,7 +167,7 @@ def gui(master, app):
     notebook.add(verify_frame, text="版本验证")
 
     # === 本地版本管理 ===
-    local_versions = get_local_versions(app.plugin_api.get_config())
+    local_versions = get_local_versions(plugin_api.get_config())
     
     version_list = tk.Listbox(local_frame, height=6)
     version_list.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -134,16 +179,36 @@ def gui(master, app):
         selection = version_list.curselection()
         if selection:
             version_path = local_versions[selection[0]]
-            try:
-                set_active_version(version_path)
+            if set_active_version(version_path, plugin_api):
                 # 静默更新配置
-                app.plugin_api.set_config("gradle_active_version", version_path, silent=True)
-                messagebox.showinfo("成功", "Gradle 版本已更新，请重启终端使环境变量生效")
-            except Exception as e:
-                messagebox.showerror("错误", f"设置版本失败: {str(e)}")
+                plugin_api.set_config("gradle_active_version", version_path, silent=True)
+                messagebox.showinfo("成功", "Gradle 环境变量已设置")
+            else:
+                messagebox.showerror("错误", "设置环境变量失败")
 
-    ttk.Button(local_frame, text="设为活动版本", 
-               command=set_active).pack(pady=5)
+    def delete_version():
+        selection = version_list.curselection()
+        if selection:
+            version_path = local_versions[selection[0]]
+            if messagebox.askyesno("确认", f"确定要删除此版本吗?\n{version_path}"):
+                if remove_gradle_version(version_path, plugin_api):
+                    # 从配置中移除
+                    local_versions.remove(version_path)
+                    plugin_api.set_config(LOCAL_VERSIONS_KEY, local_versions, silent=True)
+                    # 更新列表显示
+                    version_list.delete(selection)
+                    messagebox.showinfo("成功", "版本已删除")
+                else:
+                    messagebox.showerror("错误", "删除版本失败")
+
+    # 修改本地版本管理部分的按钮布局
+    button_frame = ttk.Frame(local_frame)
+    button_frame.pack(pady=5)
+    
+    ttk.Button(button_frame, text="设为活动版本", 
+               command=set_active).pack(side=tk.LEFT, padx=5)
+    ttk.Button(button_frame, text="删除版本", 
+               command=delete_version).pack(side=tk.LEFT, padx=5)
 
     # === 远程版本管理 ===
     remote_list = tk.Listbox(remote_frame, height=6)
@@ -159,22 +224,74 @@ def gui(master, app):
         selection = remote_list.curselection()
         if selection:
             version = remote_list.get(selection)
-            install_path = app.plugin_api.get_config("gradle_home")
+            install_path = plugin_api.get_config("gradle_home")
+            
+            print(f"准备下载 Gradle {version} 到 {install_path}")
+            
+                
+            # 确保目录存在
             try:
-                gradle_path = download_gradle(version, install_path)
-                local_versions = get_local_versions(app.plugin_api.get_config())
+                print(f"确保目录存在: {install_path}")
+                if not plugin_api.ensure_dir_exists(install_path):
+                    error_msg = f"无法创建安装目录: {install_path}"
+                    print(f"错误: {error_msg}")
+                    messagebox.showerror("错误", error_msg)
+                    return
+                
+                 # 验证安装路径
+                if not plugin_api.validate_path(path=install_path):
+                    error_msg = f"无效的安装路径: {install_path}"
+                    print(f"错误: {error_msg}")
+                    messagebox.showerror("错误", error_msg)
+                    return
+                    
+                print(f"开始下载 Gradle {version}")
+                gradle_path = download_gradle(version, install_path, plugin_api)
+                
+                print(f"Gradle {version} 下载完成，保存到: {gradle_path}")
+                local_versions = get_local_versions(plugin_api.get_config())
                 local_versions.append(gradle_path)
-                # 静默更新版本列表
-                app.plugin_api.set_config(LOCAL_VERSIONS_KEY, local_versions, silent=True)
+                
+                print("更新本地版本配置")
+                plugin_api.set_config(LOCAL_VERSIONS_KEY, local_versions, silent=True)
                 version_list.insert(tk.END, gradle_path)
-                messagebox.showinfo("成功", f"Gradle {version} 已下载")
+                
+                success_msg = f"Gradle {version} 已成功下载到 {gradle_path}"
+                print(success_msg)
+                messagebox.showinfo("成功", success_msg)
+                
             except Exception as e:
-                messagebox.showerror("错误", f"下载失败: {str(e)}")
+                error_msg = f"下载失败: {str(e)}"
+                print(f"错误: {error_msg}")
+                messagebox.showerror("错误", error_msg)
 
+    def verify_gradle_version():
+        """验证当前系统的 Gradle 版本."""
+        try:
+            # 使用 plugin_api 获取 GRADLE_HOME
+            gradle_home = plugin_api.get_env_var("GRADLE_HOME")
+            if not gradle_home:
+                return "未找到GRADLE_HOME环境变量"
+                
+            gradle_exec = os.path.join(gradle_home, "bin", "gradle.bat" if os.name == 'nt' else "gradle")
+            if not os.path.exists(gradle_exec):
+                return f"Gradle可执行文件不存在: {gradle_exec}"
+                
+            env = os.environ.copy()  # 创建环境变量副本
+            result = subprocess.run([gradle_exec, '--version'], 
+                                capture_output=True,
+                                text=True,
+                                env=env)
+            if result.returncode != 0:
+                return f"验证失败: {result.stderr}"
+            return result.stdout
+        except Exception as e:
+            return f"验证失败: {str(e)}\n请确保已正确设置Gradle环境变量"
+        
     ttk.Button(remote_frame, text="刷新版本列表", 
-               command=refresh_remote_versions).pack(pady=5)
+                command=refresh_remote_versions).pack(pady=5)
     ttk.Button(remote_frame, text="下载选中版本", 
-               command=download_selected).pack(pady=5)
+                command=download_selected).pack(pady=5)
 
     # === 版本验证 ===
     verify_text = tk.Text(verify_frame, height=10, width=50)
@@ -184,6 +301,9 @@ def gui(master, app):
         verify_text.delete(1.0, tk.END)
         result = verify_gradle_version()
         verify_text.insert(tk.END, result)
+        # 如果验证失败，显示提示
+        if "验证失败" in result or "不存在" in result:
+            messagebox.showwarning("警告", "Gradle验证失败，请确保已正确设置环境变量并重启终端")
 
     ttk.Button(verify_frame, text="验证当前版本", 
                command=verify_version).pack(pady=5)

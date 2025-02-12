@@ -34,6 +34,8 @@ class EnvConfigurator:
             "node_path": "",
             "java_path": ""
         }
+        
+        # 初始化配置
         self.config = self.load_config()
 
         # 插件列表
@@ -98,86 +100,47 @@ class EnvConfigurator:
         self.env_vars_section = EnvVarsSection(self.env_vars_frame, self.config_dir)
         self.validation_section = ValidationSection(self.validation_frame)
 
-        # 初始化 last_modified
-        if os.path.exists(self.config_file):
-            self.last_modified = os.path.getmtime(self.config_file)
-        else:
-            self.last_modified = 0
-
-        # 启动配置文件监控线程
-        self.config_monitor_thread = Thread(target=self.monitor_config_file, daemon=True)
-        self.config_monitor_thread.start()
-
         # 加载插件
         self.load_plugins()
 
-        self.config_lock = False  # 添加配置锁定标志
-        self.programmatic_change = False  # 添加程序修改标志
-
     def load_config(self):
-        # 加载配置文件
+        """每次都从文件中读取最新配置"""
         if not os.path.exists(self.config_dir):
             os.makedirs(self.config_dir)
         if not os.path.exists(self.config_file):
             with open(self.config_file, "w") as f:
                 json.dump(self.default_config, f, indent=4)
-            return self.default_config
+            return self.default_config.copy()
         try:
             with open(self.config_file, "r") as f:
                 return json.load(f)
         except Exception as e:
             print(f"加载配置文件失败: {e}, 使用默认配置")
-            return self.default_config
+            return self.default_config.copy()
+
+    def get_config(self, key=None):
+        """获取最新配置"""
+        config = self.load_config()
+        if key is None:
+            return config
+        return config.get(key)
 
     def save_config(self):
-        """保存配置文件."""
+        """保存配置文件"""
         try:
-            self.programmatic_change = True  # 标记为程序修改
+            config = self.get_config()  # 获取当前配置
+            config.update(self.config)  # 更新配置
             with open(self.config_file, "w") as f:
-                json.dump(self.config, f, indent=4)
+                json.dump(config, f, indent=4)
             print("配置文件保存成功")
         except Exception as e:
             print(f"保存配置文件失败: {e}")
-        finally:
-            # 延迟重置程序修改标志
-            self.master.after(1000, self.reset_programmatic_change)
-
-    def reset_programmatic_change(self):
-        """重置程序修改标志."""
-        self.programmatic_change = False
 
     def refresh_env(self):
         if os.name == 'nt':  # Windows 系统
             subprocess.Popen("powershell.exe -command \"[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')), 'Machine'\"", creationflags=subprocess.CREATE_NO_WINDOW)
         else:  # 其他系统（如 Linux 或 macOS）
             print("请手动刷新环境变量或重启终端。")
-
-    def monitor_config_file(self):
-        """监控配置文件修改."""
-        while True:
-            try:
-                if os.path.exists(self.config_file) and not self.config_lock:
-                    modified_time = os.path.getmtime(self.config_file)
-                    if modified_time != self.last_modified and not self.programmatic_change:
-                        self.master.after(0, self.config_file_changed)
-                        self.last_modified = modified_time
-                time.sleep(1)
-            except Exception as e:
-                print(f"监控配置文件出错: {e}")
-                time.sleep(10)
-
-    def config_file_changed(self):
-        """配置文件发生变化时的处理."""
-        if not self.programmatic_change:
-            print("检测到配置文件手动修改")
-            self.config_lock = True  # 锁定配置监控
-            response = messagebox.askyesno(
-                "配置变更", 
-                "检测到配置文件已被手动修改，是否重启应用以加载新配置？"
-            )
-            if response:
-                self.restart_application()
-            self.config_lock = False  # 解除锁定
 
     def restart_application(self):
         # 重启应用
@@ -201,7 +164,7 @@ class EnvConfigurator:
         self.master.destroy()
 
     def select_plugin(self):
-        """选择插件文件."""
+        """选择插件文件。"""
         file_path = filedialog.askopenfilename(
             title="选择插件文件",
             filetypes=[("Python Files", "*.py")]
@@ -331,7 +294,13 @@ class EnvConfigurator:
             # 插件必须有一个 gui 函数
             if hasattr(plugin, 'gui'):
                 plugin_window = tk.Toplevel(self.master)
-                plugin.gui(plugin_window, self)  # 传递主窗口和app实例
+                # 创建上下文字典
+                context = {
+                    'window': plugin_window,
+                    'app': self,
+                    'plugin_api': self.plugin_api
+                }
+                plugin.gui(plugin_window, context)  # 只传递两个参数：窗口和上下文
 
                 # 添加关闭按钮
                 close_button = ttk.Button(plugin_window, text="关闭", command=plugin_window.destroy)
